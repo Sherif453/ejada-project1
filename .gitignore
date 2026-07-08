@@ -1,6 +1,29 @@
-node_modules/
-dist/
+# Environment files
 .env
+.env.*
+!.env.example
+backend/.env
+frontend/.env
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.venv/
+backend/.venv/
+*.egg-info/
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+.nodeenv/
+
+# Local runtime data
+backend/data/
+
+# Editor / OS
 .vs/
+.vscode/
+.DS_Store

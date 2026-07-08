@@ -1,0 +1,1 @@
+"""Simple OCR backend package."""
