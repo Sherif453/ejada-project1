@@ -1,0 +1,22 @@
+[project]
+name = "financial-table-extractor-backend"
+version = "0.1.0"
+description = "Simple FastAPI backend for the OCR upload frontend."
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.139.0",
+  "psycopg[binary]==3.3.2",
+  "python-multipart==0.0.32",
+  "uvicorn[standard]==0.50.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx==0.28.1",
+  "pytest==9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
