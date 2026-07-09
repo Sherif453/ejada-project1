@@ -47,7 +47,10 @@ Backend:
 Extraction:
 
 - The backend calls `backend/app/extraction/pipeline.py::extract_document`.
-- The extraction engineer owns implementation inside `backend/app/extraction`.
+- The default extraction implementation is a hybrid financial-table pipeline:
+  native PDF tables with `pdfplumber`, scanned-page rendering with PyMuPDF, and
+  Gemini Vision for scanned pages that look table-like when a Gemini API key is
+  configured. PaddleOCR remains available as the local scanned-page backup.
 - The API and database code should not be changed for OCR implementation unless
   the frontend contract changes.
 
@@ -161,11 +164,22 @@ CREATE TABLE IF NOT EXISTS documents (
     storage_path text NOT NULL,
     status text NOT NULL DEFAULT 'processing',
     uploaded_at timestamptz NOT NULL DEFAULT now(),
+
     page_count integer,
+    table_count integer NOT NULL DEFAULT 0,
     confidence real,
+
     text text,
+    result_json jsonb,
     error text
 );
+
+ALTER TABLE documents
+    ADD COLUMN IF NOT EXISTS table_count integer
+    NOT NULL DEFAULT 0;
+
+ALTER TABLE documents
+    ADD COLUMN IF NOT EXISTS result_json jsonb;
 
 CREATE INDEX IF NOT EXISTS documents_uploaded_at_idx
     ON documents (uploaded_at DESC);
@@ -203,11 +217,37 @@ It must return:
     "text": str,
     "page_count": int | None,
     "confidence": float | None,
+    "tables": [
+        {
+            "table_index": int,
+            "page_number": int,
+            "title": str,
+            "confidence": float | None,
+            "bbox": list[float] | None,
+            "columns": list[str],
+            "rows": list[list[str]],
+            "row_count": int,
+            "column_count": int,
+        }
+    ],
 }
 ```
 
 The backend handles database updates. Extraction code should only read the file
 and return OCR results or raise an exception.
+
+Current extraction implementation:
+
+- Page classification: native/scanned based on embedded text and image content.
+- Native financial tables: `pdfplumber` table extraction.
+- Scanned table pages: PyMuPDF render plus Gemini Vision JSON extraction when
+  `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set.
+- Local scanned backup: PaddleOCR text boxes plus coordinate-based row/column
+  reconstruction with `FTE_SCANNED_ENGINE=paddle`.
+- Heavy Paddle table recognition remains available only with
+  `FTE_EXTRACTOR_MODE=paddle_full`.
+- Install with `python -m pip install -e ".[extraction]"` from `backend/`.
+- Gemini Vision is controlled by `FTE_SCANNED_ENGINE=auto|gemini|paddle`.
 
 ## Local Run
 
@@ -226,6 +266,16 @@ source .venv/bin/activate
 python -m ensurepip --upgrade
 python -m pip install -e .
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Extraction install and smoke checks:
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m pip install -e ".[extraction]"
+python scripts/smoke_extraction.py
+python scripts/smoke_extraction.py --paddle-full
 ```
 
 Frontend:

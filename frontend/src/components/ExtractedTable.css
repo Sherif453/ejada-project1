@@ -28,11 +28,24 @@
   background: #eee7d8;
   font-weight: 700;
   text-align: center;
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 
 .extracted-table td {
   background: #fffdf8;
   text-align: left;
+}
+
+.extracted-table .extracted-table__label {
+  min-width: 240px;
+  max-width: 460px;
+  background: #fffaf0;
+}
+
+.extracted-table th.extracted-table__label {
+  background: #e4dccb;
 }
 
 .extracted-table .extracted-table__numeric {
