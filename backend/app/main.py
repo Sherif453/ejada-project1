@@ -239,73 +239,40 @@ def validate_extraction_result(result: Any) -> dict[str, Any]:
         if not isinstance(table, dict):
             raise ValueError(f"tables[{table_index}] must be an object")
 
-        row_count = table.get("row_count")
-        column_count = table.get("column_count")
+        columns = table.get("columns", [])
+        if columns is None:
+            columns = []
+        if not isinstance(columns, list):
+            raise ValueError(f"tables[{table_index}].columns must be a list")
+        table["columns"] = [_cell_to_string(cell) for cell in columns]
 
-        if not isinstance(row_count, int) or isinstance(row_count, bool) or row_count < 0:
-            raise ValueError(
-                f"tables[{table_index}].row_count must be a non-negative integer"
+        rows = table.get("rows")
+        if not isinstance(rows, list):
+            raise ValueError(f"tables[{table_index}].rows must be a list")
+
+        normalized_rows: list[list[str]] = []
+        for row_index, row in enumerate(rows):
+            if not isinstance(row, list):
+                raise ValueError(f"tables[{table_index}].rows[{row_index}] must be a list")
+            normalized_rows.append([_cell_to_string(cell) for cell in row])
+        table["rows"] = normalized_rows
+
+        column_count = max(
+            len(table["columns"]),
+            max((len(row) for row in normalized_rows), default=0),
+        )
+        normalized_rows = [
+            row + [""] * (column_count - len(row))
+            for row in normalized_rows
+        ]
+        table["rows"] = normalized_rows
+        if table["columns"]:
+            table["columns"] = table["columns"] + [""] * (
+                column_count - len(table["columns"])
             )
 
-        if (
-            not isinstance(column_count, int)
-            or isinstance(column_count, bool)
-            or column_count < 0
-        ):
-            raise ValueError(
-                f"tables[{table_index}].column_count must be a non-negative integer"
-            )
-
-        cells = table.get("cells")
-        if not isinstance(cells, list):
-            raise ValueError(f"tables[{table_index}].cells must be a list")
-
-        occupied_origins: set[tuple[int, int]] = set()
-
-        for cell_index, cell in enumerate(cells):
-            if not isinstance(cell, dict):
-                raise ValueError(
-                    f"tables[{table_index}].cells[{cell_index}] must be an object"
-                )
-
-            row = cell.get("row")
-            column = cell.get("column")
-            row_span = cell.get("row_span", 1)
-            column_span = cell.get("column_span", 1)
-
-            if not isinstance(row, int) or isinstance(row, bool) or row < 0:
-                raise ValueError(f"Cell {cell_index} has an invalid row")
-
-            if not isinstance(column, int) or isinstance(column, bool) or column < 0:
-                raise ValueError(f"Cell {cell_index} has an invalid column")
-
-            if (
-                not isinstance(row_span, int)
-                or isinstance(row_span, bool)
-                or row_span < 1
-            ):
-                raise ValueError(f"Cell {cell_index} has an invalid row_span")
-
-            if (
-                not isinstance(column_span, int)
-                or isinstance(column_span, bool)
-                or column_span < 1
-            ):
-                raise ValueError(f"Cell {cell_index} has an invalid column_span")
-
-            if row + row_span > row_count:
-                raise ValueError(f"Cell {cell_index} extends beyond row_count")
-
-            if column + column_span > column_count:
-                raise ValueError(f"Cell {cell_index} extends beyond column_count")
-
-            origin = (row, column)
-            if origin in occupied_origins:
-                raise ValueError(f"Duplicate cell at row {row}, column {column}")
-            occupied_origins.add(origin)
-
-            if not isinstance(cell.get("text", ""), str):
-                raise ValueError(f"Cell {cell_index}.text must be a string")
+        table["row_count"] = len(normalized_rows)
+        table["column_count"] = column_count
 
     try:
         json.dumps(result)
@@ -313,6 +280,12 @@ def validate_extraction_result(result: Any) -> dict[str, Any]:
         raise ValueError(f"Extraction result is not JSON-compatible: {exc}") from exc
 
     return result
+
+
+def _cell_to_string(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value)
 
 
 def run_extraction(document_id: str, path: Path) -> None:
@@ -325,10 +298,11 @@ def run_extraction(document_id: str, path: Path) -> None:
 
         if not search_text:
             search_text = "\n".join(
-                str(cell.get("text") or "")
+                str(cell or "")
                 for table in tables
-                for cell in table.get("cells", [])
-                if cell.get("text")
+                for row in table.get("rows", [])
+                for cell in row
+                if cell
             )
 
         with db_connection() as conn:

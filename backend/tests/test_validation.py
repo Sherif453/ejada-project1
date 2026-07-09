@@ -18,31 +18,10 @@ VALID_RESULT = {
             "column_count": 2,
             "confidence": 0.9,
             "bbox": [10, 20, 300, 400],
-            "cells": [
-                {
-                    "row": 0,
-                    "column": 0,
-                    "text": "Heading",
-                    "row_span": 1,
-                    "column_span": 2,
-                    "is_header": True,
-                },
-                {
-                    "row": 1,
-                    "column": 0,
-                    "text": "Revenue",
-                    "row_span": 1,
-                    "column_span": 1,
-                    "is_header": False,
-                },
-                {
-                    "row": 1,
-                    "column": 1,
-                    "text": "100",
-                    "row_span": 1,
-                    "column_span": 1,
-                    "is_header": False,
-                },
+            "columns": ["Line item", "2024"],
+            "rows": [
+                ["Revenue", "100"],
+                ["Income", "40"],
             ],
         }
     ],
@@ -54,26 +33,21 @@ def test_valid_result_is_accepted() -> None:
     assert validate_extraction_result(result) == result
 
 
-def test_overlapping_cells_are_rejected() -> None:
+def test_rows_are_normalized_to_rectangular_strings() -> None:
     result = deepcopy(VALID_RESULT)
-    result["tables"][0]["cells"].append(
-        {
-            "row": 0,
-            "column": 1,
-            "text": "Overlap",
-            "row_span": 1,
-            "column_span": 1,
-            "is_header": True,
-        }
-    )
+    result["tables"][0]["columns"] = ["Line item", "2024", "2023"]
+    result["tables"][0]["rows"] = [["Revenue", 100], ["Income"]]
 
-    with pytest.raises(ValueError, match="overlaps another cell"):
-        validate_extraction_result(result)
+    normalized = validate_extraction_result(result)
+    table = normalized["tables"][0]
+    assert table["row_count"] == 2
+    assert table["column_count"] == 3
+    assert table["rows"] == [["Revenue", "100", ""], ["Income", "", ""]]
 
 
 def test_confidence_outside_zero_to_one_is_rejected() -> None:
     result = deepcopy(VALID_RESULT)
     result["confidence"] = 95
 
-    with pytest.raises(ValueError, match="between 0 and 1"):
+    with pytest.raises(ValueError, match="between 0.0 and 1.0"):
         validate_extraction_result(result)

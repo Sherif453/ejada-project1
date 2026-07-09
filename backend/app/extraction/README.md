@@ -1,14 +1,111 @@
-# Extraction Handoff
+# Hybrid Financial Table Extraction Pipeline
 
 ## Goal
 
-Implement one function that reads an uploaded PDF or image and returns a clean
-Python dictionary containing searchable text and structured financial tables.
+Read an uploaded PDF or image and return a clean Python dictionary containing
+only detected financial tables plus searchable table text.
 
 The extraction code must not access PostgreSQL, modify API routes, or generate
 frontend HTML.
 
-## Required Function
+## Current Implementation
+
+`pipeline.py` defaults to `HybridFinancialTableExtractor`, which uses:
+
+- `pdfplumber` for native/text-based PDF financial tables.
+- PyMuPDF to render scanned PDF pages only when OCR is needed.
+- Gemini Vision for scanned-page financial tables when an API key is
+  configured.
+- PaddleOCR plus coordinate heuristics as the local scanned-page backup.
+
+The old full Paddle OCR/table-recognition path remains available with:
+
+```bash
+export FTE_EXTRACTOR_MODE=paddle_full
+```
+
+The default hybrid path avoids Paddle table recognition because it is too heavy
+for full reports on CPU.
+
+## Install Extraction Dependencies
+
+From `backend/`:
+
+```bash
+source .venv/bin/activate
+python -m pip install -e ".[extraction]"
+```
+
+The `extraction` extra installs `pdfplumber`, PyMuPDF, `google-genai`,
+`paddleocr`, `paddlepaddle`, and `paddlex[ocr]`.
+
+Gemini scanned-page setup:
+
+```bash
+export GEMINI_API_KEY="your_api_key_here"
+export FTE_SCANNED_ENGINE=auto
+```
+
+`FTE_SCANNED_ENGINE=auto` uses Gemini when `GEMINI_API_KEY` or
+`GOOGLE_API_KEY` is set, otherwise it falls back to PaddleOCR. Use
+`FTE_SCANNED_ENGINE=gemini` to force Gemini or `FTE_SCANNED_ENGINE=paddle` to
+force local OCR.
+
+Recommended local CPU setting:
+
+```bash
+export FTE_PADDLE_DEVICE=cpu
+```
+
+Paddle/PaddleX downloads official models on the first extraction run. If
+Hugging Face is unavailable, Paddle docs support changing the model source:
+
+```bash
+export PADDLE_PDX_MODEL_SOURCE=bos
+```
+
+Synthetic smoke tests:
+
+```bash
+python scripts/smoke_extraction.py
+python scripts/smoke_extraction.py --paddle-full
+```
+
+The default smoke test runs the hybrid extractor. `--paddle-full` runs the old
+full Paddle table-recognition pipeline and may take several minutes or more on
+CPU.
+
+## Tuning
+
+```text
+FTE_EXTRACTOR_MODE=hybrid
+FTE_SCANNED_ENGINE=auto
+GEMINI_API_KEY=
+FTE_GEMINI_MODEL=gemini-3.5-flash
+FTE_ENABLE_NATIVE_TEXT_TABLES=true
+FTE_ENABLE_SCANNED_OCR=true
+FTE_SCANNED_REQUIRE_TABLE_LINES=true
+FTE_SCANNED_RENDER_DPI=110
+FTE_MAX_SCANNED_PAGES=
+FTE_PADDLE_DEVICE=cpu
+FTE_PADDLE_RUNTIME=direct
+```
+
+- `FTE_ENABLE_NATIVE_TEXT_TABLES=true` helps borderless native PDF tables, but
+  is slower than line-only extraction.
+- `FTE_SCANNED_ENGINE=auto` uses Gemini for scanned pages when an API key is
+  available and PaddleOCR otherwise.
+- `FTE_SCANNED_REQUIRE_TABLE_LINES=true` skips scanned pages unless they have
+  table ruling lines or enough dense text layout to be worth visual extraction.
+- `FTE_MAX_SCANNED_PAGES=3` is useful for demos when a fully scanned PDF would
+  otherwise OCR too many pages.
+- `FTE_GEMINI_MODEL=gemini-3.5-flash` controls the Gemini model.
+- `FTE_PADDLE_RUNTIME=direct` uses the lighter direct PaddleOCR wrapper; set it
+  to another value to use the older PaddleX OCR pipeline.
+- `FTE_EXTRACTOR_MODE=paddle_full` should be used only for experiments, not the
+  default local app path.
+
+## Required Function Boundary
 
 File:
 
@@ -52,83 +149,18 @@ The backend validates and stores the returned dictionary as PostgreSQL JSONB.
             "table_index": 0,
             "page_number": 11,
             "title": "Statement of Cash Flows",
-            "row_count": 3,
+            "row_count": 2,
             "column_count": 3,
             "confidence": 0.96,
             "bbox": [70, 120, 540, 700],
-            "cells": [
-                {
-                    "row": 0,
-                    "column": 0,
-                    "text": "Description",
-                    "row_span": 1,
-                    "column_span": 1,
-                    "is_header": True,
-                },
-                {
-                    "row": 0,
-                    "column": 1,
-                    "text": "2022",
-                    "row_span": 1,
-                    "column_span": 1,
-                    "is_header": True,
-                },
-                {
-                    "row": 0,
-                    "column": 2,
-                    "text": "2021",
-                    "row_span": 1,
-                    "column_span": 1,
-                    "is_header": True,
-                },
-                {
-                    "row": 1,
-                    "column": 0,
-                    "text": "Profit before zakat",
-                    "row_span": 1,
-                    "column_span": 1,
-                    "is_header": False,
-                },
-                {
-                    "row": 1,
-                    "column": 1,
-                    "text": "264,613,601",
-                    "row_span": 1,
-                    "column_span": 1,
-                    "is_header": False,
-                },
-                {
-                    "row": 1,
-                    "column": 2,
-                    "text": "211,952,573",
-                    "row_span": 1,
-                    "column_span": 1,
-                    "is_header": False,
-                },
-                {
-                    "row": 2,
-                    "column": 0,
-                    "text": "Net cash from operating activities",
-                    "row_span": 1,
-                    "column_span": 1,
-                    "is_header": False,
-                },
-                {
-                    "row": 2,
-                    "column": 1,
-                    "text": "669,173,857",
-                    "row_span": 1,
-                    "column_span": 1,
-                    "is_header": False,
-                },
-                {
-                    "row": 2,
-                    "column": 2,
-                    "text": "438,618,610",
-                    "row_span": 1,
-                    "column_span": 1,
-                    "is_header": False,
-                },
+            "columns": ["Description", "2022", "2021"],
+            "rows": [
+                ["Profit before zakat", "264,613,601", "211,952,573"],
+                [
+                    "Net cash from operating activities",
+                    "669,173,857",
+                    "438,618,610",
+                ],
             ],
         }
     ],
@@ -148,34 +180,31 @@ Every table must include:
 
 ```text
 table_index, page_number, title, row_count,
-column_count, confidence, bbox, cells
+column_count, confidence, bbox, columns, rows
 ```
 
 - `table_index` starts at `0`.
 - `page_number` starts at `1`.
 - Table indexes must be unique on each page.
 - `title` must be a string; use `""` if unknown.
-- `row_count` and `column_count` must cover all cells.
+- `row_count` must match `len(rows)` after normalization.
+- `column_count` must cover `columns` and every row.
 - `confidence` must be `0.0–1.0` or `None`.
 - `bbox` must be `[x0, y0, x1, y1]` or `None`.
 - Use one coordinate system consistently.
-- `cells` must always be a list.
+- `columns` must be a list of strings. Use `[]` if no header was detected.
+- `rows` must be a list of row lists.
+- Each row should be rectangular after backend normalization.
+- Preserve meaningful blank cells as `""`.
 
-## Cell Rules
+## Row Rules
 
-Every cell must include:
-
-```text
-row, column, text, row_span, column_span, is_header
-```
-
-- `row` and `column` start at `0`.
-- `text` must always be a string.
-- `row_span` and `column_span` must be at least `1`.
-- `is_header` must be `True` or `False`.
-- Cells must not overlap.
-- Do not add duplicate cells inside merged areas.
-- Preserve meaningful blank cells.
+- Use strings for every cell value.
+- Preserve row order from the source statement.
+- Preserve column order from left to right.
+- Put detected column headers in `columns`.
+- Put body rows only in `rows`.
+- Do not include merged-cell metadata in the default contract.
 
 Preserve financial formatting exactly:
 
@@ -185,22 +214,6 @@ Preserve financial formatting exactly:
 
 Do not convert `—` to `0`. Do not remove negative signs or accounting
 parentheses.
-
-## Merged Cell Example
-
-```python
-{
-    "row": 0,
-    "column": 1,
-    "text": "Year ended",
-    "row_span": 1,
-    "column_span": 2,
-    "is_header": True,
-}
-```
-
-This covers row `0`, columns `1` and `2`. Do not return another cell at row `0`,
-column `2`.
 
 ## Allowed Value Types
 
@@ -236,18 +249,30 @@ Do not hide critical failures by returning an empty successful result.
 
 ## Responsibilities
 
-### Extraction Engineer
+### Extraction Code
 
 Responsible for:
 
 - Reading the source file
 - Extracting text
 - Detecting tables
-- Reconstructing rows, columns, headers, and merged cells
+- Reconstructing table headers and rows
 - Returning the required dictionary
+- Adapting Paddle output to the backend contract
 
 Not responsible for PostgreSQL, database credentials, API routes, status
 updates, React, HTML, or CSS.
+
+## Implementation Files
+
+```text
+pipeline.py        public backend entrypoint
+hybrid_engine.py  default native/scanned financial table extractor
+gemini_engine.py  Gemini Vision -> backend result dictionary
+paddle_engine.py  optional full PaddleX runtime wrapper
+adapter.py        Paddle JSON -> backend result dictionary
+html_table.py     Paddle HTML table helper for optional full-Paddle mode
+```
 
 ### Backend
 
@@ -257,8 +282,8 @@ and errors.
 
 ### Frontend
 
-Responsible for reading `result.tables`, rebuilding HTML tables, applying spans,
-and displaying the source file beside the extracted result.
+Responsible for reading `result.tables`, rendering `columns` and `rows` as HTML
+tables, and displaying the source file beside the extracted result.
 
 ## Flow
 
@@ -283,9 +308,9 @@ exception -> store error -> status = failed
 - Returns a Python dictionary, not a JSON string.
 - All required fields exist.
 - Page numbers start at `1`.
-- Table, row, and column indexes start at `0`.
-- Row and column counts cover every cell.
-- Merged cells do not overlap other cells.
+- Table indexes start at `0`.
+- `row_count` matches `len(rows)`.
+- `column_count` covers `columns` and every row.
 - Financial formatting is preserved.
 - All values are JSON-compatible.
 - Real failures raise exceptions.

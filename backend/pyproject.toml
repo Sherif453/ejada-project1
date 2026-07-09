@@ -15,8 +15,19 @@ dev = [
   "httpx==0.28.1",
   "pytest==9.1.1",
 ]
+extraction = [
+  "pdfplumber==0.11.10",
+  "PyMuPDF==1.26.7",
+  "google-genai==2.10.0",
+  "paddleocr==3.7.0",
+  "paddlepaddle==3.2.0",
+  "paddlex[ocr]==3.7.2",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
+
+[tool.setuptools.packages.find]
+include = ["app*"]

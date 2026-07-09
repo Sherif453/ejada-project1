@@ -1,14 +1,12 @@
 {
-  "text": "Complete searchable document text",
+  "text": "Line item | Notes | 2024 | 2023\nProperty and equipment | 4 | 367,403,422 | 217,792,547",
   "page_count": 52,
   "confidence": 0.94,
   "tables": [
     {
       "table_index": 0,
-      "page_number": 11,
-      "title": "Statement of Cash Flows",
-      "row_count": 3,
-      "column_count": 3,
+      "page_number": 4,
+      "title": "Consolidated Statement of Financial Position",
       "confidence": 0.96,
       "bbox": [
         70,
@@ -16,80 +14,35 @@
         540,
         700
       ],
-      "cells": [
-        {
-          "row": 0,
-          "column": 0,
-          "text": "Description",
-          "row_span": 1,
-          "column_span": 1,
-          "is_header": true
-        },
-        {
-          "row": 0,
-          "column": 1,
-          "text": "2022",
-          "row_span": 1,
-          "column_span": 1,
-          "is_header": true
-        },
-        {
-          "row": 0,
-          "column": 2,
-          "text": "2021",
-          "row_span": 1,
-          "column_span": 1,
-          "is_header": true
-        },
-        {
-          "row": 1,
-          "column": 0,
-          "text": "Profit before zakat",
-          "row_span": 1,
-          "column_span": 1,
-          "is_header": false
-        },
-        {
-          "row": 1,
-          "column": 1,
-          "text": "264,613,601",
-          "row_span": 1,
-          "column_span": 1,
-          "is_header": false
-        },
-        {
-          "row": 1,
-          "column": 2,
-          "text": "211,952,573",
-          "row_span": 1,
-          "column_span": 1,
-          "is_header": false
-        },
-        {
-          "row": 2,
-          "column": 0,
-          "text": "Net cash from operating activities",
-          "row_span": 1,
-          "column_span": 1,
-          "is_header": false
-        },
-        {
-          "row": 2,
-          "column": 1,
-          "text": "669,173,857",
-          "row_span": 1,
-          "column_span": 1,
-          "is_header": false
-        },
-        {
-          "row": 2,
-          "column": 2,
-          "text": "438,618,610",
-          "row_span": 1,
-          "column_span": 1,
-          "is_header": false
-        }
-      ]
+      "columns": [
+        "Line item",
+        "Notes",
+        "2024",
+        "2023"
+      ],
+      "rows": [
+        [
+          "Property and equipment",
+          "4",
+          "367,403,422",
+          "217,792,547"
+        ],
+        [
+          "Intangible assets and goodwill",
+          "5",
+          "422,084,596",
+          "377,444,564"
+        ],
+        [
+          "Total non-current assets",
+          "",
+          "1,682,147,150",
+          "1,587,226,613"
+        ]
+      ],
+      "row_count": 3,
+      "column_count": 4,
+      "extraction_method": "native_word_coordinates"
     }
   ]
 }
