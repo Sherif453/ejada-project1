@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import api from "./api";
-import ExtractedTable from "./components/ExtractedTable";
+import ExtractedTable, { normalizeTable } from "./components/ExtractedTable";
 import "./ocr-workbench.css";
 
 const POLL_INTERVAL_MS = 2000;
@@ -19,6 +19,45 @@ function formatDate(iso) {
 
 function tableKey(table, fallbackIndex) {
   return `${table.page_number ?? "page"}:${table.table_index ?? fallbackIndex}`;
+}
+
+// NOTE: defined at module scope (not inside a component) on purpose —
+// several components below use `document` as a prop name for the OCR
+// document object, which shadows the global `document`. Keeping this here
+// guarantees it always refers to the real DOM document.
+function downloadFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function toCsvValue(value) {
+  const stringValue = String(value ?? "");
+  if (/[",\n]/.test(stringValue)) {
+    return `"${stringValue.replaceAll('"', '""')}"`;
+  }
+  return stringValue;
+}
+
+function tableToCsv(table) {
+  const lines = [];
+  if (table.columns?.length) {
+    lines.push(table.columns.map(toCsvValue).join(","));
+  }
+  for (const row of table.rows) {
+    lines.push(row.map(toCsvValue).join(","));
+  }
+  return lines.join("\r\n");
+}
+
+function safeFileName(name) {
+  return (name || "export").replace(/[^\w.-]+/g, "_");
 }
 
 function StatusBadge({ status }) {
@@ -117,6 +156,11 @@ function ResultViewer({ document }) {
   );
   const [selectedTableKey, setSelectedTableKey] = useState(null);
 
+  // Edited tables live here, keyed by "<documentId>::<tableKey>", separate
+  // from `document.result` (the original API response). Exports always read
+  // from this state, so they reflect edits, not the original extraction.
+  const [editedTables, setEditedTables] = useState({});
+
   useEffect(() => {
     if (tables.length === 0) {
       setSelectedTableKey(null);
@@ -135,6 +179,79 @@ function ResultViewer({ document }) {
     (table, index) => tableKey(table, index) === selectedTableKey,
   );
 
+  const editedKey =
+    selectedTable && selectedTableKey ? `${document.id}::${selectedTableKey}` : null;
+
+  // Seed the edited copy from the raw extraction the first time a table is
+  // viewed. After that, this effect is a no-op for that key — edits are
+  // never overwritten by the original data.
+  useEffect(() => {
+    if (!selectedTable || !editedKey) return;
+    setEditedTables((current) => {
+      if (current[editedKey]) return current;
+      return { ...current, [editedKey]: normalizeTable(selectedTable) };
+    });
+  }, [editedKey, selectedTable]);
+
+  const editedTable = editedKey ? editedTables[editedKey] : null;
+
+  const handleCellEdit = useCallback(
+    (section, rowIndex, columnIndex, value) => {
+      if (!editedKey) return;
+      setEditedTables((current) => {
+        const existing = current[editedKey];
+        if (!existing) return current;
+
+        if (section === "columns") {
+          const nextColumns = [...existing.columns];
+          nextColumns[columnIndex] = value;
+          return { ...current, [editedKey]: { ...existing, columns: nextColumns } };
+        }
+
+        const nextRows = existing.rows.map((row, index) =>
+          index === rowIndex
+            ? row.map((cell, cIdx) => (cIdx === columnIndex ? value : cell))
+            : row,
+        );
+        return { ...current, [editedKey]: { ...existing, rows: nextRows } };
+      });
+    },
+    [editedKey],
+  );
+
+  const handleExportTableCsv = () => {
+    if (!editedTable) return;
+    const name = safeFileName(selectedTable?.title || document.filename);
+    downloadFile(`${name}.csv`, tableToCsv(editedTable), "text/csv;charset=utf-8");
+  };
+
+  const handleExportAllJson = () => {
+    if (tables.length === 0) return;
+    const allTables = tables.map((table, index) => {
+      const key = `${document.id}::${tableKey(table, index)}`;
+      const edited = editedTables[key] || normalizeTable(table);
+      return {
+        title: table.title || null,
+        page_number: table.page_number ?? null,
+        columns: edited.columns,
+        rows: edited.rows,
+      };
+    });
+
+    const payload = {
+      filename: document.filename,
+      exported_at: new Date().toISOString(),
+      tables: allTables,
+    };
+
+    const name = safeFileName(document.filename);
+    downloadFile(
+      `${name}-edited.json`,
+      JSON.stringify(payload, null, 2),
+      "application/json",
+    );
+  };
+
   return (
     <div className="result-grid">
       <section className="result-panel">
@@ -143,8 +260,8 @@ function ResultViewer({ document }) {
             <h3>Original document</h3>
             <p>Use this view to compare the reconstructed table with the source.</p>
           </div>
-          <a
-            href={api.getDocumentSourceUrl(document.id)}
+          
+          <a href={api.getDocumentSourceUrl(document.id)}
             target="_blank"
             rel="noreferrer"
           >
@@ -163,8 +280,20 @@ function ResultViewer({ document }) {
         <div className="result-panel__header result-panel__header--tables">
           <div>
             <h3>Extracted tables</h3>
-            <p>{tables.length} table{tables.length === 1 ? "" : "s"} stored as JSON.</p>
+            <p>
+              {tables.length} table{tables.length === 1 ? "" : "s"} · click any cell to
+              edit
+            </p>
           </div>
+          {tables.length > 0 && (
+            <button
+              type="button"
+              className="export-btn export-btn--all"
+              onClick={handleExportAllJson}
+            >
+              Export all (JSON)
+            </button>
+          )}
         </div>
 
         {tables.length === 0 ? (
@@ -197,12 +326,21 @@ function ResultViewer({ document }) {
                       Page {selectedTable.page_number ?? "—"} · {selectedTable.row_count ?? 0} rows · {selectedTable.column_count ?? 0} columns
                     </p>
                   </div>
-                  {typeof selectedTable.confidence === "number" && (
-                    <span>{Math.round(selectedTable.confidence * 100)}% confidence</span>
-                  )}
+                  <div className="table-result__actions">
+                    {typeof selectedTable.confidence === "number" && (
+                      <span>{Math.round(selectedTable.confidence * 100)}% confidence</span>
+                    )}
+                    <button
+                      type="button"
+                      className="export-btn"
+                      onClick={handleExportTableCsv}
+                    >
+                      Export table (CSV)
+                    </button>
+                  </div>
                 </div>
 
-                <ExtractedTable table={selectedTable} />
+                <ExtractedTable table={editedTable || selectedTable} onCellEdit={handleCellEdit} />
               </div>
             )}
           </>
