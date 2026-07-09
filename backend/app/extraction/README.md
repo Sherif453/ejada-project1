@@ -14,9 +14,9 @@ frontend HTML.
 
 - `pdfplumber` for native/text-based PDF financial tables.
 - PyMuPDF to render scanned PDF pages only when OCR is needed.
-- Gemini Vision for scanned-page financial tables when an API key is
+- Gemini Vision for scanned-page and image financial tables when an API key is
   configured.
-- PaddleOCR plus coordinate heuristics as the local scanned-page backup.
+- PaddleOCR plus coordinate heuristics as the local scanned/image backup.
 
 The old full Paddle OCR/table-recognition path remains available with:
 
@@ -44,12 +44,18 @@ Gemini scanned-page setup:
 ```bash
 export GEMINI_API_KEY="your_api_key_here"
 export FTE_SCANNED_ENGINE=auto
+export FTE_GEMINI_ON_ERROR=skip
 ```
 
 `FTE_SCANNED_ENGINE=auto` uses Gemini when `GEMINI_API_KEY` or
 `GOOGLE_API_KEY` is set, otherwise it falls back to PaddleOCR. Use
 `FTE_SCANNED_ENGINE=gemini` to force Gemini or `FTE_SCANNED_ENGINE=paddle` to
 force local OCR.
+
+`FTE_GEMINI_ON_ERROR=skip` prevents quota/rate-limit errors from failing the
+whole upload; native PDF tables still extract, while unavailable scanned pages
+are skipped. Use `FTE_GEMINI_ON_ERROR=paddle` to fall back to local PaddleOCR,
+or `FTE_GEMINI_ON_ERROR=raise` when debugging Gemini failures.
 
 Recommended local CPU setting:
 
@@ -82,6 +88,9 @@ FTE_EXTRACTOR_MODE=hybrid
 FTE_SCANNED_ENGINE=auto
 GEMINI_API_KEY=
 FTE_GEMINI_MODEL=gemini-3.5-flash
+FTE_GEMINI_MEDIA_RESOLUTION=low
+FTE_GEMINI_MAX_OUTPUT_TOKENS=8192
+FTE_GEMINI_ON_ERROR=skip
 FTE_ENABLE_NATIVE_TEXT_TABLES=true
 FTE_ENABLE_SCANNED_OCR=true
 FTE_SCANNED_REQUIRE_TABLE_LINES=true
@@ -100,6 +109,12 @@ FTE_PADDLE_RUNTIME=direct
 - `FTE_MAX_SCANNED_PAGES=3` is useful for demos when a fully scanned PDF would
   otherwise OCR too many pages.
 - `FTE_GEMINI_MODEL=gemini-3.5-flash` controls the Gemini model.
+- `FTE_GEMINI_MEDIA_RESOLUTION=low` keeps Gemini image processing faster. Use
+  `medium` if a scanned table is too small or fuzzy.
+- `FTE_GEMINI_MAX_OUTPUT_TOKENS=8192` caps scanned-page JSON output size.
+- `FTE_GEMINI_ON_ERROR=skip` avoids failing the document when Gemini quota is
+  exhausted. Set it to `paddle` only when you intentionally want the slower OCR
+  backup.
 - `FTE_PADDLE_RUNTIME=direct` uses the lighter direct PaddleOCR wrapper; set it
   to another value to use the older PaddleX OCR pipeline.
 - `FTE_EXTRACTOR_MODE=paddle_full` should be used only for experiments, not the

@@ -8,6 +8,14 @@ from pathlib import Path
 from typing import Any
 
 
+PROMPT = """
+Extract financial tables only.
+Return compact JSON only:
+{"tables":[{"title":"","columns":[""],"rows":[[""]]}]}
+No prose, no page headers, no footers, no auditor/contact info.
+Preserve numbers exactly. If no financial table exists, return {"tables":[]}.
+""".strip()
+
 GEMINI_TABLE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -28,29 +36,13 @@ GEMINI_TABLE_SCHEMA: dict[str, Any] = {
                             "items": {"type": "string"},
                         },
                     },
-                    "confidence": {"type": "number"},
                 },
-                "required": ["title", "columns", "rows", "confidence"],
+                "required": ["title", "columns", "rows"],
             },
-        }
+        },
     },
     "required": ["tables"],
 }
-
-
-PROMPT = """
-Extract only financial statement tables from this page image.
-
-Return JSON matching the provided schema. Do not include prose paragraphs,
-auditor contact details, page headers, page footers, page numbers, or navigation
-labels. Preserve the table row order and left-to-right column order exactly.
-Preserve financial formatting exactly, including commas, minus signs,
-parentheses, dashes, percentages, note numbers, and blank cells.
-
-Use columns for detected column headers, such as ["Line item", "Note", "2024",
-"2023"]. Use rows for body rows only. If the page has no financial table, return
-{"tables": []}.
-""".strip()
 
 
 class GeminiVisionExtractor:
@@ -64,8 +56,13 @@ class GeminiVisionExtractor:
                 "Install with: python -m pip install -e '.[extraction]'"
             ) from exc
 
-        self._client = genai.Client(api_key=api_key)
         self._types = types
+        self._client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                timeout=int(timeout_seconds * 1000),
+            ),
+        )
         self.model = model
         self.timeout_seconds = timeout_seconds
 
@@ -84,15 +81,17 @@ class GeminiVisionExtractor:
                 self._types.Part.from_bytes(
                     data=image_bytes,
                     mime_type=_mime_type(image_path),
+                    media_resolution=_media_resolution(self._types),
                 ),
             ],
             config=self._types.GenerateContentConfig(
                 temperature=0,
                 response_mime_type="application/json",
                 response_schema=GEMINI_TABLE_SCHEMA,
+                max_output_tokens=int(os.getenv("FTE_GEMINI_MAX_OUTPUT_TOKENS", "8192")),
             ),
         )
-        payload = _parse_json_response(getattr(response, "text", ""))
+        payload = _response_payload(response)
         raw_tables = payload.get("tables")
         if not isinstance(raw_tables, list):
             return []
@@ -176,6 +175,22 @@ def _parse_json_response(text: str) -> dict[str, Any]:
     return payload
 
 
+def _response_payload(response: Any) -> dict[str, Any]:
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, dict):
+        return parsed
+    if hasattr(parsed, "model_dump"):
+        dumped = parsed.model_dump() # type: ignore
+        if isinstance(dumped, dict):
+            return dumped
+
+    text = getattr(response, "text", None)
+    if isinstance(text, str) and text.strip():
+        return _parse_json_response(text)
+
+    return {"tables": []}
+
+
 def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -209,3 +224,15 @@ def _mime_type(path: Path) -> str:
     if path.suffix.lower() in {".jpg", ".jpeg"}:
         return "image/jpeg"
     return "image/png"
+
+
+def _media_resolution(types: Any) -> Any:
+    value = os.getenv("FTE_GEMINI_MEDIA_RESOLUTION", "low").strip().lower()
+    levels = {
+        "low": types.PartMediaResolutionLevel.MEDIA_RESOLUTION_LOW,
+        "medium": types.PartMediaResolutionLevel.MEDIA_RESOLUTION_MEDIUM,
+        "high": types.PartMediaResolutionLevel.MEDIA_RESOLUTION_HIGH,
+    }
+    return types.PartMediaResolution(
+        level=levels.get(value, types.PartMediaResolutionLevel.MEDIA_RESOLUTION_LOW)
+    )

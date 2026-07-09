@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from typing import Any
 from .adapter import _average, _to_plain_output
 from .gemini_engine import get_gemini_vision_extractor
 
+
+logger = logging.getLogger(__name__)
 
 FINANCIAL_KEYWORDS = (
     "assets",
@@ -232,12 +235,32 @@ class HybridFinancialTableExtractor:
         return _result_from_tables(tables=tables, page_count=page_count)
 
     def _extract_image(self, path: Path) -> dict[str, Any]:
-        tokens, confidence = self._ocr_image_tokens(path)
-        tables = _tables_from_ocr_tokens(
-            tokens=tokens,
+        if _scanned_engine() == "gemini":
+            try:
+                tables = get_gemini_vision_extractor().extract_tables_from_image(
+                    path,
+                    page_number=1,
+                    first_table_index=0,
+                )
+            except Exception:
+                mode = _gemini_on_error()
+                logger.exception("Gemini image extraction failed; mode=%s", mode)
+                if mode == "raise":
+                    raise
+                if mode == "paddle":
+                    tables = self._extract_image_with_paddle(
+                        path,
+                        page_number=1,
+                        first_table_index=0,
+                    )
+                else:
+                    tables = []
+            return _result_from_tables(tables=tables, page_count=1)
+
+        tables = self._extract_image_with_paddle(
+            path,
             page_number=1,
             first_table_index=0,
-            confidence=confidence,
         )
         return _result_from_tables(tables=tables, page_count=1)
 
@@ -334,6 +357,8 @@ class HybridFinancialTableExtractor:
         tables: list[dict[str, Any]] = []
         zoom = self.render_dpi / 72
         matrix = fitz.Matrix(zoom, zoom)
+        disable_gemini_after_error = False
+        use_paddle_after_gemini_error = False
 
         with TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -352,26 +377,74 @@ class HybridFinancialTableExtractor:
                         continue
 
                     if _scanned_engine() == "gemini":
-                        tables.extend(
-                            get_gemini_vision_extractor().extract_tables_from_image(
-                                image_path,
-                                page_number=page_number,
-                                first_table_index=first_table_index + len(tables),
+                        if use_paddle_after_gemini_error:
+                            tables.extend(
+                                self._extract_image_with_paddle(
+                                    image_path,
+                                    page_number=page_number,
+                                    first_table_index=first_table_index + len(tables),
+                                )
                             )
-                        )
-                    else:
-                        tokens, confidence = self._ocr_image_tokens(image_path)
-                        tables.extend(
-                            _tables_from_positioned_tokens(
-                                tokens=tokens,
-                                page_number=page_number,
-                                first_table_index=first_table_index + len(tables),
-                                confidence=confidence,
-                                method="paddle_ocr_coordinates",
+                            continue
+
+                        if disable_gemini_after_error:
+                            continue
+
+                        try:
+                            tables.extend(
+                                get_gemini_vision_extractor().extract_tables_from_image(
+                                    image_path,
+                                    page_number=page_number,
+                                    first_table_index=first_table_index + len(tables),
+                                )
                             )
+                        except Exception:
+                            mode = _gemini_on_error()
+                            logger.exception(
+                                "Gemini scanned-page extraction failed on page %s; mode=%s",
+                                page_number,
+                                mode,
+                            )
+                            if mode == "raise":
+                                raise
+                            if mode == "paddle":
+                                use_paddle_after_gemini_error = True
+                                tables.extend(
+                                    self._extract_image_with_paddle(
+                                        image_path,
+                                        page_number=page_number,
+                                        first_table_index=first_table_index + len(tables),
+                                    )
+                                )
+                            else:
+                                disable_gemini_after_error = True
+                        continue
+
+                    tables.extend(
+                        self._extract_image_with_paddle(
+                            image_path,
+                            page_number=page_number,
+                            first_table_index=first_table_index + len(tables),
                         )
+                    )
 
         return tables
+
+    def _extract_image_with_paddle(
+        self,
+        image_path: Path,
+        *,
+        page_number: int,
+        first_table_index: int,
+    ) -> list[dict[str, Any]]:
+        tokens, confidence = self._ocr_image_tokens(image_path)
+        return _tables_from_positioned_tokens(
+            tokens=tokens,
+            page_number=page_number,
+            first_table_index=first_table_index,
+            confidence=confidence,
+            method="paddle_ocr_coordinates",
+        )
 
     def _ocr_image_tokens(self, image_path: Path) -> tuple[list[OcrToken], float | None]:
         outputs = list(
@@ -431,6 +504,13 @@ def _scanned_engine() -> str:
     if value in {"gemini", "paddle"}:
         return value
     return "gemini"
+
+
+def _gemini_on_error() -> str:
+    value = os.getenv("FTE_GEMINI_ON_ERROR", "skip").strip().lower()
+    if value in {"skip", "paddle", "raise"}:
+        return value
+    return "skip"
 
 
 def _is_native_page(text: str, min_chars: int) -> bool:
