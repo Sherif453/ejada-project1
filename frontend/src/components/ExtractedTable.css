@@ -65,3 +65,10 @@
   color: var(--ink-soft);
   text-align: center;
 }
+
+.extracted-table--editable th:focus,
+.extracted-table--editable td:focus {
+    outline: 2px solid #b08d57;
+    outline-offset: -2px;
+    background: #fff4d6;
+}
