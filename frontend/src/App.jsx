@@ -1,7 +1,7 @@
-import OCRWorkbench from "./OCRWorkbench";
+import DocumentWorkbench from "./DocumentWorkbench";
 
 function App() {
-  return <OCRWorkbench />;
+  return <DocumentWorkbench />;
 }
 
 export default App;

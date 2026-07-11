@@ -3,13 +3,13 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from .adapter import _average, _to_plain_output
 from .gemini_engine import get_gemini_vision_extractor
 
 
@@ -97,7 +97,7 @@ TOKEN_RE = re.compile(r"\S+")
 
 
 @dataclass(frozen=True)
-class OcrToken:
+class PositionedToken:
     text: str
     x0: float
     top: float
@@ -117,7 +117,7 @@ class OcrToken:
 @dataclass(frozen=True)
 class PositionedRow:
     cells: list[str]
-    tokens: list[OcrToken]
+    tokens: list[PositionedToken]
 
     @property
     def top(self) -> float:
@@ -128,52 +128,23 @@ class PositionedRow:
         return max(token.bottom for token in self.tokens)
 
 
-class DirectPaddleOcrRuntime:
-    def __init__(self, *, device: str) -> None:
-        try:
-            from paddleocr import PaddleOCR
-        except ModuleNotFoundError as exc:
-            raise RuntimeError(
-                "Paddle OCR dependencies are required for scanned pages. "
-                "Install with: python -m pip install -e '.[extraction]'"
-            ) from exc
-
-        kwargs: dict[str, Any] = {
-            "use_doc_orientation_classify": False,
-            "use_doc_unwarping": False,
-            "use_textline_orientation": False,
-            "text_det_limit_side_len": _int_env("FTE_PADDLE_TEXT_DET_LIMIT", 960),
-            "text_det_limit_type": "max",
-            "lang": os.getenv("FTE_PADDLE_LANG", "en"),
-        }
-        if device:
-            kwargs["device"] = device
-        self._ocr = PaddleOCR(**kwargs)
-
-    def predict(self, *, input: str, **_kwargs: Any) -> Any:
-        return self._ocr.predict(input)
-
-
 class HybridFinancialTableExtractor:
     def __init__(
         self,
         *,
         native_text_min_chars: int,
         render_dpi: int,
-        enable_scanned_ocr: bool,
+        enable_scanned_extraction: bool,
         max_scanned_pages: int | None,
-        device: str,
         enable_native_text_tables: bool,
         require_scanned_table_lines: bool,
     ) -> None:
         self.native_text_min_chars = native_text_min_chars
         self.render_dpi = render_dpi
-        self.enable_scanned_ocr = enable_scanned_ocr
+        self.enable_scanned_extraction = enable_scanned_extraction
         self.max_scanned_pages = max_scanned_pages
-        self.device = device
         self.enable_native_text_tables = enable_native_text_tables
         self.require_scanned_table_lines = require_scanned_table_lines
-        self._ocr_pipeline: Any | None = None
 
     def extract(self, path: Path) -> dict[str, Any]:
         extension = path.suffix.lower()
@@ -221,7 +192,7 @@ class HybridFinancialTableExtractor:
                 elif image_count > 0:
                     scanned_pages.append(page_index)
 
-        if self.enable_scanned_ocr and scanned_pages:
+        if self.enable_scanned_extraction and scanned_pages:
             if self.max_scanned_pages is not None:
                 scanned_pages = scanned_pages[: self.max_scanned_pages]
             tables.extend(
@@ -235,33 +206,18 @@ class HybridFinancialTableExtractor:
         return _result_from_tables(tables=tables, page_count=page_count)
 
     def _extract_image(self, path: Path) -> dict[str, Any]:
-        if _scanned_engine() == "gemini":
-            try:
-                tables = get_gemini_vision_extractor().extract_tables_from_image(
-                    path,
-                    page_number=1,
-                    first_table_index=0,
-                )
-            except Exception:
-                mode = _gemini_on_error()
-                logger.exception("Gemini image extraction failed; mode=%s", mode)
-                if mode == "raise":
-                    raise
-                if mode == "paddle":
-                    tables = self._extract_image_with_paddle(
-                        path,
-                        page_number=1,
-                        first_table_index=0,
-                    )
-                else:
-                    tables = []
-            return _result_from_tables(tables=tables, page_count=1)
-
-        tables = self._extract_image_with_paddle(
-            path,
-            page_number=1,
-            first_table_index=0,
-        )
+        try:
+            tables = get_gemini_vision_extractor().extract_tables_from_image(
+                path,
+                page_number=1,
+                first_table_index=0,
+            )
+        except Exception:
+            mode = _gemini_on_error()
+            logger.exception("Gemini image extraction failed; mode=%s", mode)
+            if mode == "raise":
+                raise
+            tables = []
         return _result_from_tables(tables=tables, page_count=1)
 
     def _extract_native_tables(
@@ -357,9 +313,6 @@ class HybridFinancialTableExtractor:
         tables: list[dict[str, Any]] = []
         zoom = self.render_dpi / 72
         matrix = fitz.Matrix(zoom, zoom)
-        disable_gemini_after_error = False
-        use_paddle_after_gemini_error = False
-
         with TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             with fitz.open(path) as document:
@@ -372,113 +325,29 @@ class HybridFinancialTableExtractor:
                     if (
                         self.require_scanned_table_lines
                         and not _image_has_table_lines(image_path)
-                        and not _image_has_dense_text_layout(image_path)
+                        and not _image_has_financial_statement_layout(image_path)
                     ):
                         continue
 
-                    if _scanned_engine() == "gemini":
-                        if use_paddle_after_gemini_error:
-                            tables.extend(
-                                self._extract_image_with_paddle(
-                                    image_path,
-                                    page_number=page_number,
-                                    first_table_index=first_table_index + len(tables),
-                                )
+                    try:
+                        tables.extend(
+                            get_gemini_vision_extractor().extract_tables_from_image(
+                                image_path,
+                                page_number=page_number,
+                                first_table_index=first_table_index + len(tables),
                             )
-                            continue
-
-                        if disable_gemini_after_error:
-                            continue
-
-                        try:
-                            tables.extend(
-                                get_gemini_vision_extractor().extract_tables_from_image(
-                                    image_path,
-                                    page_number=page_number,
-                                    first_table_index=first_table_index + len(tables),
-                                )
-                            )
-                        except Exception:
-                            mode = _gemini_on_error()
-                            logger.exception(
-                                "Gemini scanned-page extraction failed on page %s; mode=%s",
-                                page_number,
-                                mode,
-                            )
-                            if mode == "raise":
-                                raise
-                            if mode == "paddle":
-                                use_paddle_after_gemini_error = True
-                                tables.extend(
-                                    self._extract_image_with_paddle(
-                                        image_path,
-                                        page_number=page_number,
-                                        first_table_index=first_table_index + len(tables),
-                                    )
-                                )
-                            else:
-                                disable_gemini_after_error = True
-                        continue
-
-                    tables.extend(
-                        self._extract_image_with_paddle(
-                            image_path,
-                            page_number=page_number,
-                            first_table_index=first_table_index + len(tables),
                         )
-                    )
+                    except Exception:
+                        mode = _gemini_on_error()
+                        logger.exception(
+                            "Gemini scanned-page extraction failed on page %s; mode=%s",
+                            page_number,
+                            mode,
+                        )
+                        if mode == "raise":
+                            raise
 
         return tables
-
-    def _extract_image_with_paddle(
-        self,
-        image_path: Path,
-        *,
-        page_number: int,
-        first_table_index: int,
-    ) -> list[dict[str, Any]]:
-        tokens, confidence = self._ocr_image_tokens(image_path)
-        return _tables_from_positioned_tokens(
-            tokens=tokens,
-            page_number=page_number,
-            first_table_index=first_table_index,
-            confidence=confidence,
-            method="paddle_ocr_coordinates",
-        )
-
-    def _ocr_image_tokens(self, image_path: Path) -> tuple[list[OcrToken], float | None]:
-        outputs = list(
-            self._ocr_pipeline_instance().predict(
-                input=str(image_path),
-                use_doc_orientation_classify=_bool_env(
-                    "FTE_PADDLE_USE_DOC_ORIENTATION",
-                    False,
-                ),
-                use_doc_unwarping=_bool_env("FTE_PADDLE_USE_DOC_UNWARPING", False),
-                use_textline_orientation=_bool_env(
-                    "FTE_PADDLE_USE_TEXTLINE_ORIENTATION",
-                    False,
-                ),
-            )
-        )
-        pages = [_to_plain_output(output) for output in outputs]
-        return _tokens_from_ocr_pages(pages), _ocr_confidence(pages)
-
-    def _ocr_pipeline_instance(self) -> Any:
-        if self._ocr_pipeline is None:
-            if os.getenv("FTE_PADDLE_RUNTIME", "direct").strip().lower() == "direct":
-                self._ocr_pipeline = DirectPaddleOcrRuntime(device=self.device)
-                return self._ocr_pipeline
-
-            try:
-                from paddlex import create_pipeline
-            except ModuleNotFoundError as exc:
-                raise RuntimeError(
-                    "Paddle OCR dependencies are required for scanned pages. "
-                    "Install with: python -m pip install -e '.[extraction]'"
-                ) from exc
-            self._ocr_pipeline = create_pipeline(pipeline="OCR", device=self.device)
-        return self._ocr_pipeline
 
 
 @lru_cache(maxsize=1)
@@ -486,9 +355,8 @@ def get_hybrid_extractor() -> HybridFinancialTableExtractor:
     return HybridFinancialTableExtractor(
         native_text_min_chars=_int_env("FTE_NATIVE_TEXT_MIN_CHARS", 80),
         render_dpi=_int_env("FTE_SCANNED_RENDER_DPI", 110),
-        enable_scanned_ocr=_bool_env("FTE_ENABLE_SCANNED_OCR", True),
+        enable_scanned_extraction=_bool_env("FTE_ENABLE_SCANNED_EXTRACTION", True),
         max_scanned_pages=_optional_int_env("FTE_MAX_SCANNED_PAGES"),
-        device=os.getenv("FTE_PADDLE_DEVICE", "cpu"),
         enable_native_text_tables=_bool_env("FTE_ENABLE_NATIVE_TEXT_TABLES", True),
         require_scanned_table_lines=_bool_env(
             "FTE_SCANNED_REQUIRE_TABLE_LINES",
@@ -497,18 +365,9 @@ def get_hybrid_extractor() -> HybridFinancialTableExtractor:
     )
 
 
-def _scanned_engine() -> str:
-    value = os.getenv("FTE_SCANNED_ENGINE", "auto").strip().lower()
-    if value == "auto":
-        return "gemini" if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") else "paddle"
-    if value in {"gemini", "paddle"}:
-        return value
-    return "gemini"
-
-
 def _gemini_on_error() -> str:
     value = os.getenv("FTE_GEMINI_ON_ERROR", "skip").strip().lower()
-    if value in {"skip", "paddle", "raise"}:
+    if value in {"skip", "raise"}:
         return value
     return "skip"
 
@@ -1005,25 +864,9 @@ def _native_table_title(page: Any, bbox: list[float] | None) -> str:
     return " ".join(lines[max(lines)])
 
 
-def _tables_from_ocr_tokens(
-    *,
-    tokens: list[OcrToken],
-    page_number: int,
-    first_table_index: int,
-    confidence: float | None,
-) -> list[dict[str, Any]]:
-    return _tables_from_positioned_tokens(
-        tokens=tokens,
-        page_number=page_number,
-        first_table_index=first_table_index,
-        confidence=confidence,
-        method="paddle_ocr_coordinates",
-    )
-
-
 def _tables_from_positioned_tokens(
     *,
-    tokens: list[OcrToken],
+    tokens: list[PositionedToken],
     page_number: int,
     first_table_index: int,
     confidence: float | None,
@@ -1070,7 +913,7 @@ def _tables_from_positioned_tokens(
             table_index=first_table_index + len(tables),
             bbox=bbox,
             confidence=confidence,
-            title=_ocr_table_title(rows),
+            title=_positioned_table_title(rows),
             method=method,
         )
         if not _table_has_usable_rows(table):
@@ -1079,10 +922,10 @@ def _tables_from_positioned_tokens(
     return tables
 
 
-def _positioned_rows(tokens: list[OcrToken]) -> list[PositionedRow]:
+def _positioned_rows(tokens: list[PositionedToken]) -> list[PositionedRow]:
     rows: list[PositionedRow] = []
-    for token_row in _ocr_rows(tokens):
-        cells = _parse_ocr_row(token_row)
+    for token_row in _token_rows(tokens):
+        cells = _parse_positioned_row(token_row)
         if cells:
             rows.append(PositionedRow(cells=cells, tokens=token_row))
     return rows
@@ -1115,12 +958,12 @@ def _group_positioned_rows(rows: list[PositionedRow]) -> list[list[PositionedRow
     return [group for group in groups if len(group) >= 2]
 
 
-def _ocr_rows(tokens: list[OcrToken]) -> list[list[OcrToken]]:
+def _token_rows(tokens: list[PositionedToken]) -> list[list[PositionedToken]]:
     ordered = sorted(tokens, key=lambda token: (token.center_y, token.x0))
     heights = [max(1.0, token.bottom - token.top) for token in ordered]
     tolerance = max(8.0, sorted(heights)[len(heights) // 2] * 0.75) if heights else 8.0
 
-    rows: list[list[OcrToken]] = []
+    rows: list[list[PositionedToken]] = []
     for token in ordered:
         for row in rows:
             row_center = sum(item.center_y for item in row) / len(row)
@@ -1133,10 +976,10 @@ def _ocr_rows(tokens: list[OcrToken]) -> list[list[OcrToken]]:
     return [sorted(row, key=lambda token: token.x0) for row in rows]
 
 
-def _parse_ocr_row(tokens: list[OcrToken]) -> list[str]:
+def _parse_positioned_row(tokens: list[PositionedToken]) -> list[str]:
     pieces: list[str] = []
     for token in tokens:
-        pieces.extend(_split_ocr_token(token.text))
+        pieces.extend(_split_token_text(token.text))
     if not pieces:
         return []
 
@@ -1189,7 +1032,7 @@ def _is_row_value_token(pieces: list[str], index: int) -> bool:
     return True
 
 
-def _split_ocr_token(text: str) -> list[str]:
+def _split_token_text(text: str) -> list[str]:
     return [
         match.group(0).strip()
         for match in TOKEN_RE.finditer(text)
@@ -1212,7 +1055,7 @@ def _row_has_table_value(row: list[str]) -> bool:
     return any(keyword in lowered for keyword in FINANCIAL_KEYWORDS)
 
 
-def _ocr_table_title(rows: list[list[str]]) -> str:
+def _positioned_table_title(rows: list[list[str]]) -> str:
     for row in rows[:3]:
         text = " ".join(cell for cell in row if cell).strip()
         if text and any(keyword in text.lower() for keyword in FINANCIAL_KEYWORDS):
@@ -1220,28 +1063,8 @@ def _ocr_table_title(rows: list[list[str]]) -> str:
     return ""
 
 
-def _tokens_from_ocr_pages(pages: list[dict[str, Any]]) -> list[OcrToken]:
-    tokens: list[OcrToken] = []
-    for page in pages:
-        texts = page.get("rec_texts")
-        boxes = page.get("rec_boxes") or page.get("dt_polys") or page.get("rec_polys")
-        scores = page.get("rec_scores")
-        if not isinstance(texts, list) or not isinstance(boxes, list):
-            continue
-
-        for index, text in enumerate(texts):
-            bbox = _ocr_bbox(boxes[index] if index < len(boxes) else None)
-            if bbox is None:
-                continue
-            score = None
-            if isinstance(scores, list) and index < len(scores):
-                score = _float_or_none(scores[index])
-            tokens.extend(_line_to_tokens(str(text), bbox, score))
-    return tokens
-
-
-def _tokens_from_pdf_words(words: list[dict[str, Any]]) -> list[OcrToken]:
-    tokens: list[OcrToken] = []
+def _tokens_from_pdf_words(words: list[dict[str, Any]]) -> list[PositionedToken]:
+    tokens: list[PositionedToken] = []
     for word in words:
         text = str(word.get("text") or "").strip()
         if not text:
@@ -1255,7 +1078,7 @@ def _tokens_from_pdf_words(words: list[dict[str, Any]]) -> list[OcrToken]:
             continue
 
         tokens.append(
-            OcrToken(
+            PositionedToken(
                 text=text,
                 x0=x0,
                 top=top,
@@ -1310,7 +1133,7 @@ def _image_has_table_lines(path: Path) -> bool:
     return horizontal_lines >= 3 and vertical_lines >= 2
 
 
-def _image_has_dense_text_layout(path: Path) -> bool:
+def _image_has_financial_statement_layout(path: Path) -> bool:
     try:
         import cv2
     except ModuleNotFoundError:
@@ -1348,12 +1171,40 @@ def _image_has_dense_text_layout(path: Path) -> bool:
         cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE,
     )
-    line_count = 0
+    content_boxes: list[tuple[int, int, int, int]] = []
     for contour in contours:
-        _x, _y, contour_width, contour_height = cv2.boundingRect(contour)
-        if contour_width >= width * 0.12 and 4 <= contour_height <= height * 0.08:
-            line_count += 1
-    return line_count >= 8
+        x, y, contour_width, contour_height = cv2.boundingRect(contour)
+        if contour_width >= width * 0.04 and 4 <= contour_height <= height * 0.08:
+            content_boxes.append((x, y, contour_width, contour_height))
+
+    body_boxes = [
+        box
+        for box in content_boxes
+        if height * 0.12 <= box[1] <= height * 0.82
+    ]
+    if len(body_boxes) < 10:
+        return False
+
+    narrow_boxes = [
+        box
+        for box in body_boxes
+        if width * 0.08 <= box[2] <= width * 0.36
+    ]
+    wide_boxes = [
+        box
+        for box in body_boxes
+        if box[2] >= width * 0.50
+    ]
+    x_bands = {
+        round((x + contour_width / 2) / (width / 8))
+        for x, _y, contour_width, _contour_height in narrow_boxes
+    }
+
+    return (
+        len(narrow_boxes) >= 8
+        and len(x_bands) >= 4
+        and len(wide_boxes) <= max(4, len(body_boxes) // 3)
+    )
 
 
 def _count_line_contours(mask: Any, *, horizontal: bool) -> int:
@@ -1374,80 +1225,12 @@ def _count_line_contours(mask: Any, *, horizontal: bool) -> int:
     return count
 
 
-def _line_to_tokens(
-    text: str,
-    bbox: tuple[float, float, float, float],
-    score: float | None,
-) -> list[OcrToken]:
-    x0, top, x1, bottom = bbox
-    if not text.strip():
-        return []
-
-    matches = list(TOKEN_RE.finditer(text))
-    if not matches:
-        return []
-
-    width = max(1.0, x1 - x0)
-    text_length = max(1, len(text))
-    tokens: list[OcrToken] = []
-    for match in matches:
-        token_x0 = x0 + width * (match.start() / text_length)
-        token_x1 = x0 + width * (match.end() / text_length)
-        tokens.append(
-            OcrToken(
-                text=match.group(0).strip(),
-                x0=token_x0,
-                top=top,
-                x1=token_x1,
-                bottom=bottom,
-                score=score,
-            )
-        )
-    return tokens
-
-
-def _ocr_bbox(value: Any) -> tuple[float, float, float, float] | None:
-    if not isinstance(value, list):
-        return None
-    if len(value) == 4 and all(isinstance(item, (int, float)) for item in value):
-        x0, top, x1, bottom = value
-        return float(x0), float(top), float(x1), float(bottom)
-
-    points: list[tuple[float, float]] = []
-    for point in value:
-        if (
-            isinstance(point, list)
-            and len(point) >= 2
-            and isinstance(point[0], (int, float))
-            and isinstance(point[1], (int, float))
-        ):
-            points.append((float(point[0]), float(point[1])))
-    if not points:
-        return None
-    xs = [point[0] for point in points]
-    ys = [point[1] for point in points]
-    return min(xs), min(ys), max(xs), max(ys)
-
-
-def _ocr_confidence(pages: list[dict[str, Any]]) -> float | None:
-    values: list[float] = []
-    for page in pages:
-        scores = page.get("rec_scores")
-        if not isinstance(scores, list):
-            continue
-        values.extend(
-            score
-            for score in (_float_or_none(score) for score in scores)
-            if score is not None
-        )
-    return _average(values)
-
-
 def _result_from_tables(
     *,
     tables: list[dict[str, Any]],
     page_count: int | None,
 ) -> dict[str, Any]:
+    tables = _sort_tables_for_output(tables)
     text = "\n".join(
         _table_to_text(table)
         for table in tables
@@ -1464,6 +1247,45 @@ def _result_from_tables(
         "confidence": confidence,
         "tables": tables,
     }
+
+
+def _average(values: Iterable[float]) -> float | None:
+    numbers = [float(value) for value in values]
+    if not numbers:
+        return None
+    return sum(numbers) / len(numbers)
+
+
+def _sort_tables_for_output(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered = sorted(
+        enumerate(tables),
+        key=lambda item: (
+            _table_page_sort_key(item[1]),
+            _table_index_sort_key(item[1]),
+            item[0],
+        ),
+    )
+
+    sorted_tables: list[dict[str, Any]] = []
+    for output_index, (_original_index, table) in enumerate(ordered):
+        sorted_table = dict(table)
+        sorted_table["table_index"] = output_index
+        sorted_tables.append(sorted_table)
+    return sorted_tables
+
+
+def _table_page_sort_key(table: dict[str, Any]) -> int:
+    page_number = table.get("page_number")
+    if isinstance(page_number, int) and not isinstance(page_number, bool):
+        return page_number
+    return 1_000_000
+
+
+def _table_index_sort_key(table: dict[str, Any]) -> int:
+    table_index = table.get("table_index")
+    if isinstance(table_index, int) and not isinstance(table_index, bool):
+        return table_index
+    return 1_000_000
 
 
 def _table_to_text(table: dict[str, Any]) -> str:
