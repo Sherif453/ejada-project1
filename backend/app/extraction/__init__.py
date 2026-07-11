@@ -1,6 +1,6 @@
 """Extraction package.
 
 The backend calls `extract_document` from `pipeline.py`.
-The extraction engineer can replace that function with the real PaddleOCR logic
-without touching the API or database code.
+The extraction implementation can change internally without touching the API or
+database code as long as it keeps the `extract_document` contract.
 """

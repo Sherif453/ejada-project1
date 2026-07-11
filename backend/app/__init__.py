@@ -1,1 +1,1 @@
-"""Simple OCR backend package."""
+"""Simple document extraction backend package."""

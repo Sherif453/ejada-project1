@@ -1,8 +1,8 @@
-# Simple OCR Document App
+# Simple Document Extraction App
 
 ## Current Goal
 
-Build a small local app where the React frontend can upload documents, show OCR
+Build a small local app where the React frontend can upload documents, show
 processing status, display extracted text, search finished documents, and delete
 documents.
 
@@ -13,7 +13,7 @@ The backend is tailored to the current frontend in `frontend/src/api.js`.
 In scope:
 
 - FastAPI HTTP API.
-- PostgreSQL document metadata and OCR text storage.
+- PostgreSQL document metadata and extracted text storage.
 - Local upload storage.
 - One extraction handoff function for the extraction engineer.
 - Frontend/backend local development.
@@ -50,8 +50,8 @@ Extraction:
 - The default extraction implementation is a hybrid financial-table pipeline:
   native PDF tables with `pdfplumber`, scanned-page rendering with PyMuPDF, and
   Gemini Vision for scanned pages that look table-like when a Gemini API key is
-  configured. PaddleOCR remains available as the local scanned-page backup.
-- The API and database code should not be changed for OCR implementation unless
+  configured.
+- The API and database code should not be changed for extraction implementation unless
   the frontend contract changes.
 
 ## Frontend API Contract
@@ -146,9 +146,9 @@ Response:
 
 ## Status Values
 
-- `processing`: upload is saved and OCR is running.
-- `done`: OCR completed.
-- `failed`: OCR raised an exception.
+- `processing`: upload is saved and extraction is running.
+- `done`: extraction completed.
+- `failed`: extraction raised an exception.
 
 ## Database
 
@@ -234,7 +234,7 @@ It must return:
 ```
 
 The backend handles database updates. Extraction code should only read the file
-and return OCR results or raise an exception.
+and return extraction results or raise an exception.
 
 Current extraction implementation:
 
@@ -242,12 +242,8 @@ Current extraction implementation:
 - Native financial tables: `pdfplumber` table extraction.
 - Scanned table pages: PyMuPDF render plus Gemini Vision JSON extraction when
   `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set.
-- Local scanned backup: PaddleOCR text boxes plus coordinate-based row/column
-  reconstruction with `FTE_SCANNED_ENGINE=paddle`.
-- Heavy Paddle table recognition remains available only with
-  `FTE_EXTRACTOR_MODE=paddle_full`.
 - Install with `python -m pip install -e ".[extraction]"` from `backend/`.
-- Gemini Vision is controlled by `FTE_SCANNED_ENGINE=auto|gemini|paddle`.
+- Gemini Vision requires `GEMINI_API_KEY` or `GOOGLE_API_KEY` for scanned pages.
 
 ## Local Run
 
@@ -268,14 +264,12 @@ python -m pip install -e .
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Extraction install and smoke checks:
+Extraction install:
 
 ```bash
 cd backend
 source .venv/bin/activate
 python -m pip install -e ".[extraction]"
-python scripts/smoke_extraction.py
-python scripts/smoke_extraction.py --paddle-full
 ```
 
 Frontend:

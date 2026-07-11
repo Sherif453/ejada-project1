@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import api from "./api";
 import ExtractedTable, { normalizeTable } from "./components/ExtractedTable";
-import "./ocr-workbench.css";
+import "./document-workbench.css";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -22,7 +22,7 @@ function tableKey(table, fallbackIndex) {
 }
 
 // NOTE: defined at module scope (not inside a component) on purpose —
-// several components below use `document` as a prop name for the OCR
+// several components below use `document` as a prop name for the extracted
 // document object, which shadows the global `document`. Keeping this here
 // guarantees it always refers to the real DOM document.
 function downloadFile(filename, content, mimeType) {
@@ -37,23 +37,27 @@ function downloadFile(filename, content, mimeType) {
   URL.revokeObjectURL(url);
 }
 
-function toCsvValue(value) {
+function toCsvValue(value, { excelSafe = false } = {}) {
   const stringValue = String(value ?? "");
+  if (excelSafe) {
+    return `="${stringValue.replaceAll('"', '""')}"`;
+  }
   if (/[",\n]/.test(stringValue)) {
     return `"${stringValue.replaceAll('"', '""')}"`;
   }
+
   return stringValue;
 }
 
 function tableToCsv(table) {
-  const lines = [];
+  const lines = ["sep=,"];
   if (table.columns?.length) {
-    lines.push(table.columns.map(toCsvValue).join(","));
+    lines.push(table.columns.map((cell) => toCsvValue(cell, { excelSafe: true })).join(","));
   }
   for (const row of table.rows) {
-    lines.push(row.map(toCsvValue).join(","));
+    lines.push(row.map((cell) => toCsvValue(cell, { excelSafe: true })).join(","));
   }
-  return lines.join("\r\n");
+  return `\ufeff${lines.join("\r\n")}`;
 }
 
 function safeFileName(name) {
@@ -291,7 +295,9 @@ function ResultViewer({ document }) {
               className="export-btn export-btn--all"
               onClick={handleExportAllJson}
             >
-              Export all (JSON)
+              <span className="export-btn__icon" aria-hidden="true">↓</span>
+              <span>Export all</span>
+              <span className="export-btn__format">JSON</span>
             </button>
           )}
         </div>
@@ -328,14 +334,18 @@ function ResultViewer({ document }) {
                   </div>
                   <div className="table-result__actions">
                     {typeof selectedTable.confidence === "number" && (
-                      <span>{Math.round(selectedTable.confidence * 100)}% confidence</span>
+                      <span className="table-result__confidence">
+                        {Math.round(selectedTable.confidence * 100)}% confidence
+                      </span>
                     )}
                     <button
                       type="button"
                       className="export-btn"
                       onClick={handleExportTableCsv}
                     >
-                      Export table (CSV)
+                      <span className="export-btn__icon" aria-hidden="true">↓</span>
+                      <span>Export table</span>
+                      <span className="export-btn__format">CSV</span>
                     </button>
                   </div>
                 </div>
@@ -357,7 +367,7 @@ function ResultViewer({ document }) {
   );
 }
 
-export default function OCRWorkbench() {
+export default function DocumentWorkbench() {
   const [documents, setDocuments] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [isDragging, setIsDragging] = useState(false);

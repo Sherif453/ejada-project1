@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,6 +16,10 @@ from .db import db_connection, init_db
 from .extraction.pipeline import extract_document
 
 
+NOTE_HEADERS = {"note", "notes"}
+YEAR_HEADER_RE = re.compile(r"^(?:19|20)\d{2}$")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -22,7 +27,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Simple OCR Document API", lifespan=lifespan)
+app = FastAPI(title="Simple Document Extraction API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -271,8 +276,16 @@ def validate_extraction_result(result: Any) -> dict[str, Any]:
                 column_count - len(table["columns"])
             )
 
+        table["columns"], normalized_rows = _repair_missing_note_cells(
+            table["columns"],
+            normalized_rows,
+        )
+        table["rows"] = normalized_rows
         table["row_count"] = len(normalized_rows)
-        table["column_count"] = column_count
+        table["column_count"] = max(
+            len(table["columns"]),
+            max((len(row) for row in normalized_rows), default=0),
+        )
 
     try:
         json.dumps(result)
@@ -286,6 +299,125 @@ def _cell_to_string(value: Any) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+def _repair_missing_note_cells(
+    columns: list[str],
+    rows: list[list[str]],
+) -> tuple[list[str], list[list[str]]]:
+    """Restore blank Notes cells that some extractors omit in financial tables."""
+    if not columns or not rows:
+        return columns, rows
+
+    width = max(len(columns), max((len(row) for row in rows), default=0))
+    repaired_columns = _pad_cells(columns, width)
+    repaired_rows = [_pad_cells(row, width) for row in rows]
+
+    if (
+        _is_note_header(repaired_columns[0])
+        and _rows_look_like_description_first_statement(repaired_rows)
+    ):
+        if repaired_columns[-1].strip():
+            repaired_columns = ["", *repaired_columns]
+            repaired_rows = [[*row, ""] for row in repaired_rows]
+        else:
+            repaired_columns = ["", *repaired_columns[:-1]]
+
+    note_column_index = next(
+        (
+            index
+            for index, column in enumerate(repaired_columns)
+            if _is_note_header(column)
+        ),
+        None,
+    )
+    if note_column_index is None or note_column_index + 1 >= len(repaired_columns):
+        return repaired_columns, repaired_rows
+
+    aligned_rows: list[list[str]] = []
+    for row in repaired_rows:
+        aligned = list(row)
+        if (
+            aligned[-1].strip() == ""
+            and _looks_like_financial_amount(aligned[note_column_index])
+            and not _looks_like_note_reference(aligned[note_column_index])
+        ):
+            aligned = (
+                aligned[:note_column_index]
+                + [""]
+                + aligned[note_column_index:-1]
+            )
+        aligned_rows.append(aligned)
+
+    return repaired_columns, aligned_rows
+
+
+def _pad_cells(cells: list[str], width: int) -> list[str]:
+    return [*cells, *([""] * (width - len(cells)))]
+
+
+def _is_note_header(value: str) -> bool:
+    return value.strip().lower() in NOTE_HEADERS
+
+
+def _rows_look_like_description_first_statement(rows: list[list[str]]) -> bool:
+    matching_rows = 0
+    for row in rows[:20]:
+        if len(row) < 3:
+            continue
+        first_cell = row[0].strip()
+        if (
+            not first_cell
+            or _looks_like_financial_amount(first_cell)
+            or _looks_like_note_reference(first_cell)
+            or YEAR_HEADER_RE.match(first_cell)
+        ):
+            continue
+        if any(_looks_like_financial_amount(cell) for cell in row[1:]):
+            matching_rows += 1
+
+    non_empty_rows = [
+        row
+        for row in rows
+        if any(cell.strip() for cell in row)
+    ]
+    return matching_rows >= 2 or (matching_rows == 1 and len(non_empty_rows) <= 3)
+
+
+def _looks_like_note_reference(value: str) -> bool:
+    text = value.strip()
+    if not text or YEAR_HEADER_RE.match(text):
+        return False
+
+    normalized = re.sub(r"\s+", "", text.lower())
+    if re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?", normalized):
+        return False
+
+    return bool(
+        re.fullmatch(
+            r"\d{1,3}(?:(?:,|&|/|-|and)\d{1,3})*",
+            normalized,
+        )
+    )
+
+
+def _looks_like_financial_amount(value: str) -> bool:
+    text = value.strip()
+    if not text or YEAR_HEADER_RE.match(text) or _looks_like_note_reference(text):
+        return False
+
+    normalized = text.replace(" ", "").replace("\u2212", "-")
+    is_parenthesized = normalized.startswith("(") and normalized.endswith(")")
+    if is_parenthesized:
+        normalized = normalized[1:-1]
+    normalized = normalized.removeprefix("+").removeprefix("-")
+
+    if re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?%?", normalized):
+        return True
+    if re.fullmatch(r"\d+(?:\.\d+)?%?", normalized):
+        digits = re.sub(r"\D", "", normalized)
+        return is_parenthesized or len(digits) >= 4
+    return False
 
 
 def run_extraction(document_id: str, path: Path) -> None:

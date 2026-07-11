@@ -1,6 +1,6 @@
-# Frontend — OCR Upload + Results Screen
+# Frontend — Document Upload + Results Screen
 
-React frontend for the OCR document management project. Built with Vite.
+React frontend for the document extraction project. Built with Vite.
 Talks to a FastAPI backend + Postgres, but has no backend-specific code
 baked in beyond the fetch calls in `src/api.js`.
 
@@ -46,10 +46,10 @@ frontend/
 ├── vite.config.js
 └── src/
     ├── main.jsx            # Vite/React entry point
-    ├── App.jsx             # Renders OCRWorkbench
-    ├── OCRWorkbench.jsx    # The upload + results screen
+    ├── App.jsx             # Renders DocumentWorkbench
+    ├── DocumentWorkbench.jsx # The upload + results screen
     ├── api.js              # All network calls to the FastAPI backend
-    └── ocr-workbench.css   # Styles (plain CSS, no framework dependency)
+    └── document-workbench.css # Styles (plain CSS, no framework dependency)
 ```
 
 ## Connecting to the backend
@@ -85,13 +85,13 @@ Share this with the backend teammate — it's the exact shape the frontend expec
 |---|---|---|---|
 | `POST` | `/api/documents` | Upload a file (`multipart/form-data`, field `file`) | `{ id, filename, status: "processing", uploaded_at }` |
 | `GET` | `/api/documents` | List all documents, most recent first | `[{ id, filename, status, uploaded_at, page_count, confidence }]` |
-| `GET` | `/api/documents/{id}` | Poll one document's OCR status/result | `{ id, filename, status, uploaded_at, page_count, confidence, text, error }` |
-| `GET` | `/api/documents/search?q=` | Full-text search over OCR'd text | `[{ id, filename, snippet, score }]` |
+| `GET` | `/api/documents/{id}` | Poll one document's extraction status/result | `{ id, filename, status, uploaded_at, page_count, confidence, text, error }` |
+| `GET` | `/api/documents/search?q=` | Full-text search over extracted text | `[{ id, filename, snippet, score }]` |
 | `DELETE` | `/api/documents/{id}` | Remove a document | `204 No Content` |
 
 `status` is one of: `"processing"`, `"done"`, `"failed"`.
 
-Suggested Postgres shape for the OCR side (for the backend teammate, not required by the frontend):
+Suggested Postgres shape for the extraction side (for the backend teammate, not required by the frontend):
 
 ```sql
 create table documents (

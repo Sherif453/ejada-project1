@@ -9,11 +9,19 @@ from typing import Any
 
 
 PROMPT = """
-Extract financial tables only.
+Extract financial statement tables from this page image.
 Return compact JSON only:
 {"tables":[{"title":"","columns":[""],"rows":[[""]]}]}
-No prose, no page headers, no footers, no auditor/contact info.
-Preserve numbers exactly. If no financial table exists, return {"tables":[]}.
+Treat borderless financial statements as tables when line-item labels align with
+year/period numeric columns. This includes statement of profit or loss,
+financial position, cash flows, changes in equity, and comprehensive income.
+For a statement page, extract the main statement table even if there are no cell
+borders. Keep all line items and totals between the statement title and the
+signatures/attached-notes footer. Use the visible header row as columns.
+Do not extract auditor report prose, signatures, stamps, contact details,
+footers, or page numbers. Preserve numbers exactly, including commas,
+parentheses, dashes, and percentages. If the page truly has no financial
+statement table, return {"tables":[]}.
 """.strip()
 
 GEMINI_TABLE_SCHEMA: dict[str, Any] = {
@@ -74,23 +82,39 @@ class GeminiVisionExtractor:
         first_table_index: int,
     ) -> list[dict[str, Any]]:
         image_bytes = image_path.read_bytes()
-        response = self._client.models.generate_content(
-            model=self.model,
-            contents=[
-                PROMPT,
-                self._types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type=_mime_type(image_path),
-                    media_resolution=_media_resolution(self._types),
-                ),
-            ],
-            config=self._types.GenerateContentConfig(
-                temperature=0,
-                response_mime_type="application/json",
-                response_schema=GEMINI_TABLE_SCHEMA,
-                max_output_tokens=int(os.getenv("FTE_GEMINI_MAX_OUTPUT_TOKENS", "8192")),
+        contents = [
+            PROMPT,
+            self._types.Part.from_bytes(
+                data=image_bytes,
+                mime_type=_mime_type(image_path),
+                media_resolution=_media_resolution(self._types),
             ),
+        ]
+        config = self._types.GenerateContentConfig(
+            temperature=0,
+            response_mime_type="application/json",
+            response_schema=GEMINI_TABLE_SCHEMA,
+            max_output_tokens=int(os.getenv("FTE_GEMINI_MAX_OUTPUT_TOKENS", "8192")),
         )
+
+        last_error: Exception | None = None
+        for model in _model_candidates(self.model):
+            try:
+                response = self._client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=config,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                if _is_retryable_model_error(exc):
+                    continue
+                raise
+        else:
+            assert last_error is not None
+            raise last_error
+
         payload = _response_payload(response)
         raw_tables = payload.get("tables")
         if not isinstance(raw_tables, list):
@@ -114,12 +138,12 @@ def get_gemini_vision_extractor() -> GeminiVisionExtractor:
     if not api_key:
         raise RuntimeError(
             "Gemini scanned-page extraction requires GEMINI_API_KEY. "
-            "Set FTE_SCANNED_ENGINE=paddle to use the local Paddle OCR backup."
+            "Set GEMINI_API_KEY or GOOGLE_API_KEY before processing scanned pages."
         )
 
     return GeminiVisionExtractor(
         api_key=api_key,
-        model=os.getenv("FTE_GEMINI_MODEL", "gemini-3.5-flash"),
+        model=os.getenv("FTE_GEMINI_MODEL", "gemini-2.5-flash-lite"),
         timeout_seconds=float(os.getenv("FTE_GEMINI_TIMEOUT", "120")),
     )
 
@@ -142,6 +166,7 @@ def _normalize_gemini_table(
     if width < 2:
         return None
 
+    columns = _repair_statement_columns(columns, width)
     columns = _pad_row(columns, width) if columns else []
     rows = [_pad_row(row, width) for row in rows]
     confidence = _confidence(raw_table.get("confidence"))
@@ -218,6 +243,50 @@ def _confidence(value: Any) -> float | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return min(1.0, max(0.0, float(value)))
     return None
+
+
+def _repair_statement_columns(columns: list[str], width: int) -> list[str]:
+    if not columns:
+        return []
+
+    first = columns[0].strip().lower()
+    if first in {"note", "notes"} and width >= 4:
+        if len(columns) == width and not columns[-1].strip():
+            return ["", *columns[:-1]]
+        if len(columns) == width - 1:
+            return ["", *columns]
+
+    return columns
+
+
+def _model_candidates(primary_model: str) -> list[str]:
+    configured = [
+        model.strip()
+        for model in os.getenv(
+            "FTE_GEMINI_FALLBACK_MODELS",
+            "gemini-3.5-flash,gemini-2.5-flash",
+        ).split(",")
+        if model.strip()
+    ]
+    candidates = [primary_model, *configured]
+    deduped: list[str] = []
+    for model in candidates:
+        if model not in deduped:
+            deduped.append(model)
+    return deduped
+
+
+def _is_retryable_model_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "429" in text
+        or "resource_exhausted" in text
+        or "quota" in text
+        or "503" in text
+        or "unavailable" in text
+        or "high demand" in text
+        or "overloaded" in text
+    )
 
 
 def _mime_type(path: Path) -> str:

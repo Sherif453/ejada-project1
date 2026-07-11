@@ -1,7 +1,7 @@
 [project]
 name = "financial-table-extractor-backend"
 version = "0.1.0"
-description = "Simple FastAPI backend for the OCR upload frontend."
+description = "Simple FastAPI backend for the document extraction frontend."
 requires-python = ">=3.12"
 dependencies = [
   "fastapi==0.139.0",
@@ -19,9 +19,7 @@ extraction = [
   "pdfplumber==0.11.10",
   "PyMuPDF==1.26.7",
   "google-genai==2.10.0",
-  "paddleocr==3.7.0",
-  "paddlepaddle==3.2.0",
-  "paddlex[ocr]==3.7.2",
+  "opencv-python-headless==4.12.0.88",
 ]
 
 [tool.pytest.ini_options]

@@ -44,3 +44,19 @@ def test_normalize_gemini_table_returns_backend_shape() -> None:
         ],
         "extraction_method": "gemini_vision",
     }
+
+
+def test_normalize_gemini_table_repairs_note_first_statement_columns() -> None:
+    table = _normalize_gemini_table(
+        {
+            "title": "Statement of Financial Position",
+            "columns": ["Note", "2022 SR", "2021 SR", ""],
+            "rows": [["Property and equipment", "13", "100", "90"]],
+        },
+        page_number=9,
+        table_index=0,
+    )
+
+    assert table is not None
+    assert table["columns"] == ["", "Note", "2022 SR", "2021 SR"]
+    assert table["rows"] == [["Property and equipment", "13", "100", "90"]]

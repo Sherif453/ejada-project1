@@ -45,6 +45,47 @@ def test_rows_are_normalized_to_rectangular_strings() -> None:
     assert table["rows"] == [["Revenue", "100", ""], ["Income", "", ""]]
 
 
+def test_missing_note_cells_are_reinserted_before_financial_amounts() -> None:
+    result = deepcopy(VALID_RESULT)
+    result["tables"][0]["columns"] = ["Line item", "Notes", "2024", "2023"]
+    result["tables"][0]["rows"] = [
+        ["Cash profit flows", "680,719,382", "436,996,562", ""],
+        ["Defined benefit obligations", "16", "14,786,185", "14,164,932"],
+        ["Financial assets", "27,28", "81,038,285", "74,793,037"],
+        ["Expected credit losses", "3,416,079", "(390,305)", ""],
+    ]
+
+    normalized = validate_extraction_result(result)
+    table = normalized["tables"][0]
+
+    assert table["rows"] == [
+        ["Cash profit flows", "", "680,719,382", "436,996,562"],
+        ["Defined benefit obligations", "16", "14,786,185", "14,164,932"],
+        ["Financial assets", "27,28", "81,038,285", "74,793,037"],
+        ["Expected credit losses", "", "3,416,079", "(390,305)"],
+    ]
+
+
+def test_note_first_columns_are_repaired_when_description_header_is_missing() -> None:
+    result = deepcopy(VALID_RESULT)
+    result["tables"][0]["columns"] = ["Notes", "2024", "2023", ""]
+    result["tables"][0]["rows"] = [
+        ["Cash profit flows", "680,719,382", "436,996,562", ""],
+        ["Defined benefit obligations", "16", "14,786,185", "14,164,932"],
+        ["Expected credit losses", "3,416,079", "(390,305)", ""],
+    ]
+
+    normalized = validate_extraction_result(result)
+    table = normalized["tables"][0]
+
+    assert table["columns"] == ["", "Notes", "2024", "2023"]
+    assert table["rows"] == [
+        ["Cash profit flows", "", "680,719,382", "436,996,562"],
+        ["Defined benefit obligations", "16", "14,786,185", "14,164,932"],
+        ["Expected credit losses", "", "3,416,079", "(390,305)"],
+    ]
+
+
 def test_confidence_outside_zero_to_one_is_rejected() -> None:
     result = deepcopy(VALID_RESULT)
     result["confidence"] = 95
